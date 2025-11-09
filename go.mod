@@ -2,7 +2,7 @@ module git.i.ctrl.red/blink/gorsh
 
 go 1.22.0
 
-toolchain go1.22.4
+toolchain go1.22.2
 
 require (
 	code.cloudfoundry.org/bytefmt v0.14.0
@@ -30,6 +30,7 @@ require (
 	github.com/C-Sto/BananaPhone v0.0.0-20220220002628-6585e5913761 // indirect
 	github.com/audibleblink/logerr v0.0.1 // indirect
 	github.com/awgh/rawreader v0.0.0-20200626064944-56820a9c6da4 // indirect
+	github.com/chzyer/test v1.0.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/flynn-archive/go-shlex v0.0.0-20150515145356-3f9db97f8568 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
@@ -40,12 +41,14 @@ require (
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/miekg/dns v1.1.62 // indirect
+	github.com/nicocha30/ligolo-ng v0.6.2 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/tklauser/go-sysconf v0.3.14 // indirect
 	github.com/tklauser/numcpus v0.9.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/crypto v0.28.0 // indirect
 	golang.org/x/mod v0.21.0 // indirect
 	golang.org/x/net v0.30.0 // indirect
 	golang.org/x/tools v0.26.0 // indirect
 )
+
+replace github.com/nicocha30/ligolo-ng => ./ligolo-ng

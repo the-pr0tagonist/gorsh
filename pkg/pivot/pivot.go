@@ -4,30 +4,38 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"fmt"
-	"net"
 	"os"
 	"os/user"
+	"fmt"
+	"net"
 	"syscall"
 	"time"
-
-	"github.com/audibleblink/ligolo-ng/pkg/agent/neterror"
-	"github.com/audibleblink/ligolo-ng/pkg/agent/smartping"
-	"github.com/audibleblink/ligolo-ng/pkg/protocol"
-	"github.com/audibleblink/ligolo-ng/pkg/relay"
+	"github.com/nicocha30/ligolo-ng/pkg/agent/neterror"
+	"github.com/nicocha30/ligolo-ng/pkg/agent/smartping"
+	"github.com/nicocha30/ligolo-ng/pkg/protocol" // Changement de module
+	"github.com/nicocha30/ligolo-ng/pkg/relay"
+	"github.com/google/uuid"
 	"github.com/hashicorp/yamux"
 	"github.com/sirupsen/logrus"
 )
 
+var listenerConntrack map[int32]net.Conn
+var listenerMap map[int32]net.Listener
+var connTrackID       int32
+var listenerID        int32
+var sessionID         string
 var (
 	retry     = true
 	tlsConfig tls.Config
 
-	listenerConntrack map[int32]net.Conn
-	listenerMap       map[int32]net.Listener
-	connTrackID       int32
-	listenerID        int32
+
 )
+
+func init() {
+	id := uuid.New()
+	sessionID = id.String()
+}
+
 
 func Connect(host string) error {
 	tlsConfig.ServerName = host
@@ -60,7 +68,7 @@ func connect(conn net.Conn, config *tls.Config) error {
 		if err != nil {
 			return err
 		}
-		go handleConn(conn)
+		go HandleConn(conn)
 	}
 }
 
@@ -96,17 +104,18 @@ func (s *Listener) Close() error {
 	return s.Listener.Close()
 }
 
-func handleConn(conn net.Conn) {
+func HandleConn(conn net.Conn) {
 	decoder := protocol.NewDecoder(conn)
 	if err := decoder.Decode(); err != nil {
-		panic(err)
+		logrus.Error(err)
+		return
 	}
 
-	e := decoder.Envelope.Payload
-	switch decoder.Envelope.Type {
+	e := decoder
+	switch decoder.Payload.(type) {
 
-	case protocol.MessageConnectRequest:
-		connRequest := e.(protocol.ConnectRequestPacket)
+	case *protocol.ConnectRequestPacket:
+		connRequest := e.Payload.(*protocol.ConnectRequestPacket)
 		encoder := protocol.NewEncoder(conn)
 
 		logrus.Debugf("Got connect request to %s:%d", connRequest.Address, connRequest.Port)
@@ -142,28 +151,24 @@ func handleConn(conn net.Conn) {
 		} else {
 			connectPacket.Established = true
 		}
-		if err := encoder.Encode(protocol.Envelope{
-			Type:    protocol.MessageConnectResponse,
-			Payload: connectPacket,
-		}); err != nil {
-			logrus.Fatal(err)
+		if err := encoder.Encode(connectPacket); err != nil {
+			logrus.Error(err)
+			return
 		}
 		if connectPacket.Established {
 			relay.StartRelay(targetConn, conn)
 		}
-	case protocol.MessageHostPingRequest:
-		pingRequest := e.(protocol.HostPingRequestPacket)
+	case *protocol.HostPingRequestPacket:
+		pingRequest := e.Payload.(*protocol.HostPingRequestPacket)
 		encoder := protocol.NewEncoder(conn)
 
 		pingResponse := protocol.HostPingResponsePacket{Alive: smartping.TryResolve(pingRequest.Address)}
 
-		if err := encoder.Encode(protocol.Envelope{
-			Type:    protocol.MessageHostPingResponse,
-			Payload: pingResponse,
-		}); err != nil {
-			logrus.Fatal(err)
+		if err := encoder.Encode(pingResponse); err != nil {
+			logrus.Error(err)
+			return
 		}
-	case protocol.MessageInfoRequest:
+	case *protocol.InfoRequestPacket:
 		var username string
 		encoder := protocol.NewEncoder(conn)
 		hostname, err := os.Hostname()
@@ -171,7 +176,7 @@ func handleConn(conn net.Conn) {
 			hostname = "UNKNOWN"
 		}
 
-		userinfo, _ := user.Current()
+		userinfo, err := user.Current()
 		if err != nil {
 			username = "Unknown"
 		} else {
@@ -186,22 +191,23 @@ func handleConn(conn net.Conn) {
 		infoResponse := protocol.InfoReplyPacket{
 			Name:       fmt.Sprintf("%s@%s", username, hostname),
 			Interfaces: protocol.NewNetInterfaces(netifaces),
+			SessionID:  sessionID,
 		}
 
-		if err := encoder.Encode(protocol.Envelope{
-			Type:    protocol.MessageInfoReply,
-			Payload: infoResponse,
-		}); err != nil {
-			logrus.Fatal(err)
+		if err := encoder.Encode(infoResponse); err != nil {
+			logrus.Error(err)
+			return
 		}
-	case protocol.MessageListenerCloseRequest:
+	case *protocol.ListenerCloseRequestPacket:
 		// Request to close a listener
-		closeRequest := e.(protocol.ListenerCloseRequestPacket)
+		closeRequest := e.Payload.(*protocol.ListenerCloseRequestPacket)
 		encoder := protocol.NewEncoder(conn)
 
 		var err error
 		if lis, ok := listenerMap[closeRequest.ListenerID]; ok {
-			err = lis.Close()
+			if l, ok := lis.(net.Listener); ok {
+				l.Close()
+			}
 		} else {
 			err = errors.New("invalid listener id")
 		}
@@ -213,88 +219,78 @@ func handleConn(conn net.Conn) {
 			listenerResponse.ErrString = err.Error()
 		}
 
-		if err := encoder.Encode(protocol.Envelope{
-			Type:    protocol.MessageListenerCloseResponse,
-			Payload: listenerResponse,
-		}); err != nil {
+		if err := encoder.Encode(listenerResponse); err != nil {
 			logrus.Error(err)
 		}
 
-	case protocol.MessageListenerRequest:
-		listenRequest := e.(protocol.ListenerRequestPacket)
+	case *protocol.ListenerRequestPacket:
+		listenRequest := e.Payload.(*protocol.ListenerRequestPacket)
 		encoder := protocol.NewEncoder(conn)
 		connTrackChan := make(chan int32)
 		stopChan := make(chan error)
 
-		listener, err := NewListener(listenRequest.Network, listenRequest.Address)
-		if err != nil {
+		if listenRequest.Network == "tcp" {
+			listener, err := NewListener(listenRequest.Network, listenRequest.Address)
+			if err != nil {
+				listenerResponse := protocol.ListenerResponsePacket{
+					ListenerID: 0,
+					Err:        true,
+					ErrString:  err.Error(),
+				}
+				if err := encoder.Encode(listenerResponse); err != nil {
+					logrus.Error(err)
+				}
+				return
+			}
+			listenerMap[listenerID] = listener.Listener
 			listenerResponse := protocol.ListenerResponsePacket{
-				ListenerID: 0,
-				Err:        true,
-				ErrString:  err.Error(),
+				ListenerID: listenerID,
+				Err:        false,
+				ErrString:  "",
 			}
-			if err := encoder.Encode(protocol.Envelope{
-				Type:    protocol.MessageListenerResponse,
-				Payload: listenerResponse,
-			}); err != nil {
+			if err := encoder.Encode(listenerResponse); err != nil {
 				logrus.Error(err)
 			}
-			return
+			go func() {
+				if err := listener.ListenAndServe(connTrackChan); err != nil {
+					stopChan <- err
+				}
+			}()
+			defer listener.Close()
+
 		}
 
-		listenerResponse := protocol.ListenerResponsePacket{
-			ListenerID: listenerID,
-			Err:        false,
-			ErrString:  "",
-		}
-		listenerMap[listenerID] = listener.Listener
 		listenerID++
-
-		if err := encoder.Encode(protocol.Envelope{
-			Type:    protocol.MessageListenerResponse,
-			Payload: listenerResponse,
-		}); err != nil {
-			logrus.Error(err)
-		}
-
-		go func() {
-			if err := listener.ListenAndServe(connTrackChan); err != nil {
-				stopChan <- err
-			}
-		}()
-		defer listener.Close()
-
-		for {
-			var bindResponse protocol.ListenerBindReponse
-			select {
-			case err := <-stopChan:
-				logrus.Error(err)
-				bindResponse = protocol.ListenerBindReponse{
-					SockID:    0,
-					Err:       true,
-					ErrString: err.Error(),
+		if listenRequest.Network == "tcp" {
+			for {
+				var bindResponse protocol.ListenerBindReponse
+				select {
+				case err := <-stopChan:
+					logrus.Error(err)
+					bindResponse = protocol.ListenerBindReponse{
+						SockID:    0,
+						Err:       true,
+						ErrString: err.Error(),
+					}
+				case connTrackID := <-connTrackChan:
+					bindResponse = protocol.ListenerBindReponse{
+						SockID: connTrackID,
+						Err:    false,
+					}
 				}
-			case connTrackID := <-connTrackChan:
-				bindResponse = protocol.ListenerBindReponse{
-					SockID: connTrackID,
-					Err:    false,
+
+				if err := encoder.Encode(bindResponse); err != nil {
+					logrus.Error(err)
 				}
-			}
 
-			if err := encoder.Encode(protocol.Envelope{
-				Type:    protocol.MessageListenerBindResponse,
-				Payload: bindResponse,
-			}); err != nil {
-				logrus.Error(err)
-			}
+				if bindResponse.Err {
+					break
+				}
 
-			if bindResponse.Err {
-				break
 			}
-
 		}
-	case protocol.MessageListenerSockRequest:
-		sockRequest := e.(protocol.ListenerSockRequestPacket)
+	case *protocol.ListenerSockRequestPacket:
+		sockRequest := e.Payload.(*protocol.ListenerSockRequestPacket)
 		encoder := protocol.NewEncoder(conn)
 
 		var sockResponse protocol.ListenerSockResponsePacket
@@ -304,11 +300,9 @@ func handleConn(conn net.Conn) {
 			sockResponse.Err = true
 		}
 
-		if err := encoder.Encode(protocol.Envelope{
-			Type:    protocol.MessageListenerSockResponse,
-			Payload: sockResponse,
-		}); err != nil {
-			logrus.Fatal(err)
+		if err := encoder.Encode(sockResponse); err != nil {
+			logrus.Error(err)
+			return
 		}
 
 		if sockResponse.Err {
@@ -318,7 +312,7 @@ func handleConn(conn net.Conn) {
 		netConn := listenerConntrack[sockRequest.SockID]
 		relay.StartRelay(netConn, conn)
 
-	case protocol.MessageClose:
+	case *protocol.ListenerCloseResponsePacket:
 		os.Exit(0)
 
 	}

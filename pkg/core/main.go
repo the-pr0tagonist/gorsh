@@ -40,7 +40,7 @@ func InitReverseShell(connectString string, fingerprint []byte) {
 			StartShell(&myconn.Conn)
 		}
 
-		log.Printf("%s unreachable, trying agian in 5 seconds", connectString)
+		log.Printf("%s unreachable, trying again in 5 seconds", connectString)
 		time.Sleep(5 * time.Second)
 	}
 }

